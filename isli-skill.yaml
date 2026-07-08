@@ -1,0 +1,16 @@
+isli_version: "2.0"
+id: "n8n-orchestrator-wan"
+name: "n8n Orchestrator WAN"
+description: "Full n8n instance management. Create, update, and manage n8n workflows and executions with strict JSON validation."
+version: "1.0.0"
+author: "ISLI AI"
+category: "automation"
+
+runtime:
+  port: 8000
+  build:
+    context: "."
+    dockerfile: "Dockerfile"
+
+auth:
+  type: "internal_jwt"
