@@ -3,7 +3,7 @@ import httpx
 from typing import Optional, Dict, Any
 from app.schemas import Workflow
 
-app = FastAPI(title="n8n Orchestrator WAN", version="1.0.0")
+app = FastAPI(title="n8n Orchestrator WAN", version="1.1.0")
 
 async def get_n8n_client(
     x_n8n_api_key: str = Header(None, description="n8n API Key"),

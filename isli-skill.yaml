@@ -2,7 +2,7 @@ isli_version: "2.0"
 id: "n8n-orchestrator-wan"
 name: "n8n Orchestrator WAN"
 description: "Full n8n instance management. Create, update, and manage n8n workflows and executions with strict JSON validation."
-version: "1.0.0"
+version: "1.1.0"
 author: "ISLI AI"
 category: "automation"
 
@@ -14,3 +14,83 @@ runtime:
 
 auth:
   type: "internal_jwt"
+
+config:
+  - key: X-N8n-Api-Key
+    label: "n8n API Key"
+    description: "Personal API Key for n8n"
+    required: true
+    secret: true
+  - key: n8n-host
+    label: "n8n Host URL"
+    description: "The host URL of the target n8n instance"
+    default: "http://localhost:5678"
+    required: false
+    secret: false
+
+tools:
+  - name: "get_workflows"
+    description: "Get all workflows from n8n"
+    endpoint: "/workflows"
+    method: "GET"
+  - name: "create_workflow"
+    description: "Create a new workflow in n8n. Payload is strictly validated."
+    endpoint: "/workflows"
+    method: "POST"
+    parameters:
+      type: "object"
+      properties:
+        name: { type: "string", description: "Name of the workflow" }
+        nodes: { type: "array", description: "List of nodes in the workflow" }
+        connections: { type: "object", description: "Connections between nodes" }
+        settings: { type: "object", description: "Workflow settings" }
+      required: ["name", "nodes"]
+  - name: "update_workflow"
+    description: "Update an existing workflow"
+    endpoint: "/workflows/{workflow_id}"
+    method: "PUT"
+    parameters:
+      type: "object"
+      properties:
+        workflow_id: { type: "string", description: "ID of the workflow to update" }
+        name: { type: "string", description: "Name of the workflow" }
+        nodes: { type: "array", description: "List of nodes in the workflow" }
+        connections: { type: "object", description: "Connections between nodes" }
+        settings: { type: "object", description: "Workflow settings" }
+      required: ["workflow_id", "name", "nodes"]
+  - name: "activate_workflow"
+    description: "Activate a workflow"
+    endpoint: "/workflows/{workflow_id}/activate"
+    method: "POST"
+    parameters:
+      type: "object"
+      properties:
+        workflow_id: { type: "string", description: "ID of the workflow to activate" }
+      required: ["workflow_id"]
+  - name: "deactivate_workflow"
+    description: "Deactivate a workflow"
+    endpoint: "/workflows/{workflow_id}/deactivate"
+    method: "POST"
+    parameters:
+      type: "object"
+      properties:
+        workflow_id: { type: "string", description: "ID of the workflow to deactivate" }
+      required: ["workflow_id"]
+  - name: "trigger_execution"
+    description: "Trigger an execution for a workflow"
+    endpoint: "/executions/{workflow_id}"
+    method: "POST"
+    parameters:
+      type: "object"
+      properties:
+        workflow_id: { type: "string", description: "ID of the workflow to trigger" }
+      required: ["workflow_id"]
+  - name: "get_execution"
+    description: "Get execution details"
+    endpoint: "/executions/{execution_id}"
+    method: "GET"
+    parameters:
+      type: "object"
+      properties:
+        execution_id: { type: "string", description: "ID of the execution to retrieve" }
+      required: ["execution_id"]
