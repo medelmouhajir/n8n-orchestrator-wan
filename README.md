@@ -5,8 +5,10 @@ A standalone Dockerized HTTP microservice skill designed for the **ISLI v2.0 Uni
 ## Key Features
 
 - **Workflow Validation**: Prevents the community-reported "empty nodes" issue when creating workflows via the API by strictly validating the workflow JSON schema (nodes, connections, settings) before sending it to n8n.
+- **ISLI Core RPC Contract**: Conforms to ISLI Core proxy dispatching by implementing flat top-level `POST` endpoints with request body parameter binding.
 - **Workflow Management**: Create, read, update, activate, and deactivate workflows.
 - **Execution Monitoring**: Trigger executions and fetch status or detailed execution logs.
+- **Containerized Auth**: Seamless credential ingestion via container environment variables and internal JWT token verification (`X-Internal-Auth`).
 
 ---
 
@@ -16,14 +18,28 @@ A standalone Dockerized HTTP microservice skill designed for the **ISLI v2.0 Uni
 n8n-orchestrator-wan/
 ├── app/
 │   ├── __init__.py
-│   ├── main.py        # FastAPI server endpoints & proxies
+│   ├── main.py        # FastAPI server RPC endpoints & proxies
 │   └── schemas.py     # Pydantic schemas validating n8n workflows
+├── tests/
+│   └── test_main.py   # Comprehensive automated test suite
 ├── Dockerfile         # Docker recipe for the skill microservice
 ├── docker-compose.yml # Test environment with local n8n setup
 ├── isli-skill.yaml    # ISLI v2.0 Skill Manifest
 ├── requirements.txt   # Python dependencies
 └── README.md          # This file
 ```
+
+---
+
+## Configuration & Environment Variables
+
+Credentials and configuration are injected into the skill container via environment variables:
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `N8N_API_KEY` | Yes | `""` | Personal API Key for the target n8n instance |
+| `N8N_HOST` | No | `http://host.docker.internal:5678` | Base URL of the target n8n instance |
+| `JWT_SECRET` | Optional | `None` | Shared secret to verify incoming `X-Internal-Auth` JWT tokens |
 
 ---
 
@@ -42,53 +58,63 @@ This starts n8n at `http://127.0.0.1:5678`.
 Install Python dependencies (Python 3.10+ recommended) and run the FastAPI server:
 ```bash
 pip install -r requirements.txt
+export N8N_API_KEY="your-n8n-api-key"
+export N8N_HOST="http://localhost:5678"
 python -m uvicorn app.main:app --port 8000 --reload
 ```
 The skill endpoint proxy will be available at `http://127.0.0.1:8000`.
 
+### 3. Running Automated Tests
+```bash
+pytest tests -v
+```
+
 ---
 
-## API Endpoints & Usage
+## RPC Actions & Tool Contract
 
-All requests to the orchestrator require the following HTTP headers:
-- `X-N8n-Api-Key`: Your n8n Personal API Key.
-- `n8n-host` (Optional): The host URL of the target n8n instance (defaults to `http://localhost:5678`).
+All skill tools receive `POST` requests forwarded by ISLI Core:
 
 ### Workflows
 
 #### Get All Workflows
-- **Method**: `GET`
-- **Path**: `/workflows`
+- **Method**: `POST`
+- **Path**: `/get_workflows`
+- **Body**: `{}`
 
 #### Create a Workflow
 - **Method**: `POST`
-- **Path**: `/workflows`
-- **Body**: A validated n8n workflow payload.
+- **Path**: `/create_workflow`
+- **Body**: A validated n8n workflow payload (`name`, `nodes`, `connections`, `settings`).
   
 *Note: The `active` status is stripped automatically during creation payload transfer since n8n treats it as a read-only property on workflow registration.*
 
 #### Update a Workflow
-- **Method**: `PUT`
-- **Path**: `/workflows/{workflow_id}`
-- **Body**: The updated workflow payload.
+- **Method**: `POST`
+- **Path**: `/update_workflow`
+- **Body**: `{ "workflow_id": "...", "name": "...", "nodes": [...], "connections": {...}, "settings": {...} }`
 
 #### Activate Workflow
 - **Method**: `POST`
-- **Path**: `/workflows/{workflow_id}/activate`
+- **Path**: `/activate_workflow`
+- **Body**: `{ "workflow_id": "..." }`
 
 #### Deactivate Workflow
 - **Method**: `POST`
-- **Path**: `/workflows/{workflow_id}/deactivate`
+- **Path**: `/deactivate_workflow`
+- **Body**: `{ "workflow_id": "..." }`
 
 ### Executions
 
 #### Trigger Execution
 - **Method**: `POST`
-- **Path**: `/executions/{workflow_id}`
+- **Path**: `/trigger_execution`
+- **Body**: `{ "workflow_id": "..." }`
 
 #### Get Execution Details
-- **Method**: `GET`
-- **Path**: `/executions/{execution_id}`
+- **Method**: `POST`
+- **Path**: `/get_execution`
+- **Body**: `{ "execution_id": "..." }`
 
 ---
 

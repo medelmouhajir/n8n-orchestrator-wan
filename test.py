@@ -1,9 +1,11 @@
+import os
 import httpx
 import asyncio
 import json
 
-API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJkZTUwMTIxMS1iYmYyLTRjYTQtOTE3OC02ZGFlMGI1NjBjMDQiLCJpc3MiOiJuOG4iLCJhdWQiOiJwdWJsaWMtYXBpIiwianRpIjoiZTdmNGM2OTktNjc4NS00ZDE0LWI4NmQtYzY3ZmFhYmQwMzgzIiwiaWF0IjoxNzgzMzA1NzUwLCJleHAiOjE3OTEwNzIwMDB9.ThLUJrqdQpr50w3rOlM2BTV3VN82ncbttENsV2gRmmw"
-PROXY_URL = "http://127.0.0.1:8000/workflows"
+# Optionally provide JWT_SECRET if testing with auth enabled
+JWT_SECRET = os.getenv("JWT_SECRET")
+PROXY_URL = "http://127.0.0.1:8000/create_workflow"
 
 workflow_payload = {
     "name": "Test Workflow from ISLI Skill",
@@ -23,15 +25,18 @@ workflow_payload = {
 }
 
 async def run():
-    print("Testing Workflow Creation via n8n-orchestrator-wan proxy...")
+    print("Testing Workflow Creation via n8n-orchestrator-wan proxy (/create_workflow)...")
+    headers = {"Content-Type": "application/json"}
+    if JWT_SECRET:
+        import jwt
+        token = jwt.encode({"sub": "test-user"}, JWT_SECRET, algorithm="HS256")
+        headers["X-Internal-Auth"] = token
+
     async with httpx.AsyncClient() as client:
         res = await client.post(
             PROXY_URL,
             json=workflow_payload,
-            headers={
-                "X-N8n-Api-Key": API_KEY,
-                "n8n-host": "http://127.0.0.1:5678"
-            }
+            headers=headers
         )
         print(f"Status Code: {res.status_code}")
         print(f"Response: {json.dumps(res.json(), indent=2)}")
