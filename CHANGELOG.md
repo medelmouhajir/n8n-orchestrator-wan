@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.1]
+### Fixed
+- **`trigger_execution` n8n 2.x Architecture & Auto-Activation**:
+  - Inspected both `activeVersion.nodes` and canvas `nodes` to locate Webhook trigger nodes in n8n 2.x versioned workflows.
+  - Automatically activated/published the workflow prior to dispatching if inactive, ensuring n8n registers the production webhook URL.
+  - Standardized response format to `{"status": "triggered", "workflow_id": ..., "webhook_path": ..., "response": ...}`.
+- **`update_workflow` Node Sanitization & Active Protection**:
+  - Implemented `sanitize_nodes()` to alias hallucinated node types (e.g. `nodes.none`, `noop` -> `n8n-nodes-base.noOp`), inject UUIDs for missing node IDs, and guarantee valid default positions, `typeVersion`, and `parameters`.
+  - Added active-state protection: if an active workflow is updated with a node list lacking a trigger, automatically unpublishes/deactivates the workflow before `PUT` so n8n does not reject the update.
+
 ## [1.3.0]
 ### Fixed
 - **`activate_workflow` & `deactivate_workflow` (n8n 2.x Publishing)**:

@@ -1,4 +1,5 @@
 import os
+import uuid
 import jwt
 import httpx
 import logging
@@ -8,7 +9,47 @@ from pydantic import BaseModel
 from app.schemas import Workflow
 
 logger = logging.getLogger("n8n-skill")
-app = FastAPI(title="n8n Orchestrator WAN", version="1.3.0")
+app = FastAPI(title="n8n Orchestrator WAN", version="1.3.1")
+
+NODE_TYPE_ALIASES = {
+    "nodes.none": "n8n-nodes-base.noOp",
+    "none": "n8n-nodes-base.noOp",
+    "noop": "n8n-nodes-base.noOp",
+    "noOp": "n8n-nodes-base.noOp",
+    "webhook": "n8n-nodes-base.webhook",
+    "schedule": "n8n-nodes-base.scheduleTrigger",
+}
+
+def sanitize_nodes(nodes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Ensure all nodes have valid n8n types, IDs, positions, and parameters."""
+    sanitized = []
+    for idx, raw_node in enumerate(nodes):
+        node = dict(raw_node)
+        raw_type = str(node.get("type", ""))
+        node["type"] = NODE_TYPE_ALIASES.get(raw_type, raw_type)
+
+        if not node.get("id"):
+            node["id"] = str(uuid.uuid4())
+
+        pos = node.get("position")
+        if not isinstance(pos, list) or len(pos) < 2:
+            node["position"] = [250.0, 300.0 + (idx * 100.0)]
+
+        if not node.get("typeVersion"):
+            node["typeVersion"] = 1
+        if not isinstance(node.get("parameters"), dict):
+            node["parameters"] = {}
+
+        sanitized.append(node)
+    return sanitized
+
+def has_trigger_node(nodes: List[Dict[str, Any]]) -> bool:
+    """Check if the node list contains at least one trigger node."""
+    for node in nodes:
+        ntype = str(node.get("type", "")).lower()
+        if "trigger" in ntype or "webhook" in ntype or "poll" in ntype:
+            return True
+    return False
 
 def get_n8n_host() -> str:
     return os.getenv("N8N_HOST", os.getenv("n8n-host", "http://host.docker.internal:5678")).rstrip("/")
@@ -96,8 +137,9 @@ async def create_workflow(workflow: Workflow):
 
 @app.post("/update_workflow", dependencies=[Depends(verify_jwt)])
 async def update_workflow(payload: UpdateWorkflowRequest):
+    """Update workflow with smart merge, node sanitization, and active-state protection."""
     async with httpx.AsyncClient(timeout=20.0) as client:
-        # Step 1: Fetch existing workflow to perform Smart Merge
+        # 1. Fetch existing workflow
         try:
             get_resp = await client.get(
                 f"{get_n8n_host()}/api/v1/workflows/{payload.workflow_id}",
@@ -109,9 +151,10 @@ async def update_workflow(payload: UpdateWorkflowRequest):
         except httpx.RequestError as exc:
             raise HTTPException(status_code=502, detail=f"Failed to connect to n8n: {exc}")
 
-        # Step 2: Merge fields, ensuring nodes, connections, and settings are strictly valid objects/lists
-        name = payload.name if payload.name is not None else existing_wf.get("name", "")
-        nodes = payload.nodes if payload.nodes is not None else existing_wf.get("nodes", [])
+        # 2. Merge and sanitize
+        name = payload.name if payload.name is not None else existing_wf.get("name", "Untitled")
+        raw_nodes = payload.nodes if payload.nodes is not None else existing_wf.get("nodes", [])
+        nodes = sanitize_nodes(raw_nodes)
 
         connections = payload.connections if payload.connections is not None else existing_wf.get("connections")
         if not isinstance(connections, dict):
@@ -121,6 +164,21 @@ async def update_workflow(payload: UpdateWorkflowRequest):
         if not isinstance(settings, dict):
             settings = {}
 
+        is_currently_active = bool(existing_wf.get("active"))
+        will_have_trigger = has_trigger_node(nodes)
+
+        # 3. If an active workflow is updated without a trigger, deactivate it first so n8n doesn't reject the PUT
+        if is_currently_active and not will_have_trigger:
+            unpub_resp = await client.post(
+                f"{get_n8n_host()}/api/v1/workflows/{payload.workflow_id}/unpublish",
+                headers=get_n8n_headers()
+            )
+            if unpub_resp.status_code in (404, 405):
+                await client.post(
+                    f"{get_n8n_host()}/api/v1/workflows/{payload.workflow_id}/deactivate",
+                    headers=get_n8n_headers()
+                )
+
         body: Dict[str, Any] = {
             "name": name,
             "nodes": nodes,
@@ -128,7 +186,7 @@ async def update_workflow(payload: UpdateWorkflowRequest):
             "settings": settings,
         }
 
-        # Step 3: PUT merged workflow
+        # 4. PUT merged workflow
         try:
             resp = await client.put(
                 f"{get_n8n_host()}/api/v1/workflows/{payload.workflow_id}",
@@ -183,8 +241,9 @@ async def deactivate_workflow(payload: WorkflowIdRequest):
 
 @app.post("/trigger_execution", dependencies=[Depends(verify_jwt)])
 async def trigger_execution(payload: TriggerExecutionRequest):
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        # Step 1: Fetch workflow to find Webhook node
+    """Trigger workflow via Webhook node, inspecting both activeVersion and draft nodes."""
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        # 1. Fetch workflow definition
         try:
             wf_resp = await client.get(
                 f"{get_n8n_host()}/api/v1/workflows/{payload.workflow_id}",
@@ -196,10 +255,14 @@ async def trigger_execution(payload: TriggerExecutionRequest):
         except httpx.RequestError as exc:
             raise HTTPException(status_code=502, detail=f"Failed to connect to n8n: {exc}")
 
-        # Step 2: Inspect nodes for a Webhook node
-        nodes = workflow_data.get("nodes", [])
+        # 2. Search for Webhook node across activeVersion and draft nodes
+        nodes_to_search = []
+        if isinstance(workflow_data.get("activeVersion"), dict):
+            nodes_to_search.extend(workflow_data["activeVersion"].get("nodes", []))
+        nodes_to_search.extend(workflow_data.get("nodes", []))
+
         webhook_node = None
-        for node in nodes:
+        for node in nodes_to_search:
             node_type = str(node.get("type", ""))
             if node_type == "n8n-nodes-base.webhook" or "webhook" in node_type.lower():
                 webhook_node = node
@@ -208,7 +271,11 @@ async def trigger_execution(payload: TriggerExecutionRequest):
         if not webhook_node:
             raise HTTPException(
                 status_code=400,
-                detail=f"Workflow '{payload.workflow_id}' cannot be triggered: no Webhook node found. In n8n, workflows must contain a Webhook node to be triggered on demand via API."
+                detail=(
+                    f"Workflow '{payload.workflow_id}' cannot be triggered: no Webhook node found. "
+                    "In n8n, workflows must contain a Webhook node (n8n-nodes-base.webhook) "
+                    "to be triggered on demand via API."
+                )
             )
 
         parameters = webhook_node.get("parameters", {})
@@ -219,24 +286,44 @@ async def trigger_execution(payload: TriggerExecutionRequest):
                 detail=f"Webhook node in workflow '{payload.workflow_id}' has no path configured."
             )
 
+        # 3. Ensure workflow is active so n8n registers the webhook URL
+        if not workflow_data.get("active"):
+            pub_resp = await client.post(
+                f"{get_n8n_host()}/api/v1/workflows/{payload.workflow_id}/publish",
+                headers=get_n8n_headers()
+            )
+            if pub_resp.status_code in (404, 405):
+                await client.post(
+                    f"{get_n8n_host()}/api/v1/workflows/{payload.workflow_id}/activate",
+                    headers=get_n8n_headers()
+                )
+
+        # 4. Dispatch request to webhook URL
         path = str(path).lstrip("/")
         webhook_url = f"{get_n8n_host()}/webhook/{path}"
         http_method = parameters.get("httpMethod", "POST").upper()
+        req_payload = payload.payload or {}
 
-        # Step 3: Trigger the webhook
         try:
-            if http_method == "GET" and not payload.payload:
+            if http_method == "GET" and not req_payload:
                 trigger_resp = await client.get(webhook_url, headers=get_n8n_headers())
             else:
-                trigger_resp = await client.post(webhook_url, json=payload.payload or {}, headers=get_n8n_headers())
+                trigger_resp = await client.post(webhook_url, json=req_payload, headers=get_n8n_headers())
 
             if trigger_resp.status_code >= 400:
                 raise HTTPException(status_code=trigger_resp.status_code, detail=parse_n8n_error(trigger_resp))
 
             try:
-                return trigger_resp.json()
+                hook_data = trigger_resp.json()
             except Exception:
-                return {"message": "Workflow was started", "response": trigger_resp.text}
+                hook_data = {"message": trigger_resp.text}
+
+            return {
+                "status": "triggered",
+                "workflow_id": payload.workflow_id,
+                "webhook_path": path,
+                "response": hook_data
+            }
         except httpx.RequestError as exc:
             raise HTTPException(status_code=502, detail=f"Failed to trigger webhook at {webhook_url}: {exc}")
 

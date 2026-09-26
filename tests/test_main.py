@@ -4,7 +4,7 @@ import httpx
 from fastapi.testclient import TestClient
 from unittest.mock import AsyncMock, patch
 
-from app.main import app, get_n8n_headers, get_n8n_host
+from app.main import app, get_n8n_headers, get_n8n_host, sanitize_nodes, has_trigger_node
 
 client = TestClient(app)
 
@@ -99,7 +99,8 @@ def test_update_workflow_smart_merge(monkeypatch):
         "name": "Original Name",
         "nodes": [{"id": "n1", "name": "Start", "type": "n8n-nodes-base.manualTrigger", "typeVersion": 1, "position": [0, 0], "parameters": {}}],
         "connections": {"Start": {"main": [[{"node": "Next", "type": "main", "index": 0}]]}},
-        "settings": {"saveExecutionProgress": True}
+        "settings": {"saveExecutionProgress": True},
+        "active": False
     }
 
     # Partial update: changing only name
@@ -130,17 +131,92 @@ def test_update_workflow_smart_merge(monkeypatch):
         assert kwargs["json"]["settings"] == existing_wf["settings"]
 
 
+def test_update_workflow_node_sanitization(monkeypatch):
+    monkeypatch.delenv("JWT_SECRET", raising=False)
+    monkeypatch.setenv("N8N_HOST", "http://n8n.internal:5678")
+
+    existing_wf = {
+        "id": "wf-raw",
+        "name": "Raw Flow",
+        "nodes": [],
+        "connections": {},
+        "settings": {},
+        "active": False
+    }
+
+    raw_payload = {
+        "workflow_id": "wf-raw",
+        "nodes": [
+            {
+                "name": "Hallucinated NoOp",
+                "type": "nodes.none"
+                # Missing id, position, typeVersion, parameters
+            }
+        ]
+    }
+
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get, \
+         patch("httpx.AsyncClient.put", new_callable=AsyncMock) as mock_put:
+        mock_get.return_value = httpx.Response(200, json=existing_wf)
+        mock_put.return_value = httpx.Response(200, json={"id": "wf-raw"})
+
+        res = client.post("/update_workflow", json=raw_payload)
+        assert res.status_code == 200
+
+        sanitized_node = mock_put.call_args[1]["json"]["nodes"][0]
+        assert sanitized_node["type"] == "n8n-nodes-base.noOp"
+        assert "id" in sanitized_node and len(sanitized_node["id"]) > 0
+        assert sanitized_node["position"] == [250.0, 300.0]
+        assert sanitized_node["typeVersion"] == 1
+        assert sanitized_node["parameters"] == {}
+
+
+def test_update_workflow_active_without_trigger_deactivates_first(monkeypatch):
+    monkeypatch.delenv("JWT_SECRET", raising=False)
+    monkeypatch.setenv("N8N_HOST", "http://n8n.internal:5678")
+
+    existing_wf = {
+        "id": "wf-active",
+        "name": "Active Flow",
+        "active": True,
+        "nodes": [{"id": "t1", "name": "Trigger", "type": "n8n-nodes-base.scheduleTrigger"}],
+        "connections": {},
+        "settings": {}
+    }
+
+    # Replacing nodes with a noOp node (no trigger)
+    update_payload = {
+        "workflow_id": "wf-active",
+        "nodes": [{"name": "Only Action", "type": "n8n-nodes-base.noOp"}]
+    }
+
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get, \
+         patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post, \
+         patch("httpx.AsyncClient.put", new_callable=AsyncMock) as mock_put:
+        mock_get.return_value = httpx.Response(200, json=existing_wf)
+        mock_post.return_value = httpx.Response(200, json={"active": False})
+        mock_put.return_value = httpx.Response(200, json={"id": "wf-active"})
+
+        res = client.post("/update_workflow", json=update_payload)
+        assert res.status_code == 200
+
+        # Verify unpublish was called before PUT
+        mock_post.assert_called_once()
+        assert mock_post.call_args[0][0] == "http://n8n.internal:5678/api/v1/workflows/wf-active/unpublish"
+        mock_put.assert_called_once()
+
+
 def test_update_workflow_guarantees_empty_objects(monkeypatch):
     monkeypatch.delenv("JWT_SECRET", raising=False)
     monkeypatch.setenv("N8N_HOST", "http://n8n.internal:5678")
 
-    # Workflow where connections and settings are None/null from n8n
     existing_wf = {
         "id": "wf-empty",
         "name": "Empty Flow",
         "nodes": [],
         "connections": None,
-        "settings": None
+        "settings": None,
+        "active": False
     }
 
     with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get, \
@@ -177,7 +253,6 @@ def test_activate_workflow_fallback_to_activate(monkeypatch):
     monkeypatch.setenv("N8N_HOST", "http://n8n.internal:5678")
 
     with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
-        # First call to /publish returns 404 (e.g. n8n 1.x), second call to /activate succeeds
         mock_post.side_effect = [
             httpx.Response(404, json={"message": "Not found"}),
             httpx.Response(200, json={"active": True})
@@ -234,13 +309,14 @@ def test_deactivate_workflow_fallback_to_deactivate(monkeypatch):
         assert mock_post.call_args_list[1][0][0] == "http://n8n.internal:5678/api/v1/workflows/wf-123/deactivate"
 
 
-def test_trigger_execution_via_webhook(monkeypatch):
+def test_trigger_execution_via_webhook_active(monkeypatch):
     monkeypatch.delenv("JWT_SECRET", raising=False)
     monkeypatch.setenv("N8N_HOST", "http://n8n.internal:5678")
 
     workflow_with_webhook = {
         "id": "wf-hook",
         "name": "Webhook Flow",
+        "active": True,
         "nodes": [
             {
                 "id": "node-hook",
@@ -263,7 +339,10 @@ def test_trigger_execution_via_webhook(monkeypatch):
 
         res = client.post("/trigger_execution", json={"workflow_id": "wf-hook", "payload": {"foo": "bar"}})
         assert res.status_code == 200
-        assert res.json()["message"] == "Workflow was started"
+        data = res.json()
+        assert data["status"] == "triggered"
+        assert data["webhook_path"] == "my-trigger-path"
+        assert data["response"]["message"] == "Workflow was started"
 
         # Verify workflow was fetched
         mock_get.assert_called_once()
@@ -276,6 +355,80 @@ def test_trigger_execution_via_webhook(monkeypatch):
         assert kwargs["json"] == {"foo": "bar"}
 
 
+def test_trigger_execution_finds_webhook_in_active_version(monkeypatch):
+    monkeypatch.delenv("JWT_SECRET", raising=False)
+    monkeypatch.setenv("N8N_HOST", "http://n8n.internal:5678")
+
+    # Draft canvas only has NoOp, but activeVersion has Webhook
+    workflow_data = {
+        "id": "wf-v2",
+        "name": "Versioned Flow",
+        "active": True,
+        "nodes": [
+            {"id": "noop-1", "name": "NoOp", "type": "n8n-nodes-base.noOp"}
+        ],
+        "activeVersion": {
+            "nodes": [
+                {
+                    "id": "hook-node",
+                    "name": "Webhook",
+                    "type": "n8n-nodes-base.webhook",
+                    "parameters": {"path": "isli-probe-hook"}
+                }
+            ]
+        }
+    }
+
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get, \
+         patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
+        mock_get.return_value = httpx.Response(200, json=workflow_data)
+        mock_post.return_value = httpx.Response(200, json={"message": "Workflow was started"})
+
+        res = client.post("/trigger_execution", json={"workflow_id": "wf-v2"})
+        assert res.status_code == 200
+        assert res.json()["webhook_path"] == "isli-probe-hook"
+
+        mock_post.assert_called_once()
+        assert mock_post.call_args[0][0] == "http://n8n.internal:5678/webhook/isli-probe-hook"
+
+
+def test_trigger_execution_auto_activates_if_inactive(monkeypatch):
+    monkeypatch.delenv("JWT_SECRET", raising=False)
+    monkeypatch.setenv("N8N_HOST", "http://n8n.internal:5678")
+
+    workflow_inactive = {
+        "id": "wf-inactive",
+        "name": "Inactive Flow",
+        "active": False,
+        "nodes": [
+            {
+                "id": "hook-node",
+                "name": "Webhook",
+                "type": "n8n-nodes-base.webhook",
+                "parameters": {"path": "inactive-hook"}
+            }
+        ]
+    }
+
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get, \
+         patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
+        mock_get.return_value = httpx.Response(200, json=workflow_inactive)
+        # First call is /publish, second call is /webhook/inactive-hook
+        mock_post.side_effect = [
+            httpx.Response(200, json={"active": True}),
+            httpx.Response(200, json={"message": "Workflow was started"})
+        ]
+
+        res = client.post("/trigger_execution", json={"workflow_id": "wf-inactive"})
+        assert res.status_code == 200
+        assert res.json()["status"] == "triggered"
+
+        # Verify publish was invoked first
+        assert mock_post.call_count == 2
+        assert mock_post.call_args_list[0][0][0] == "http://n8n.internal:5678/api/v1/workflows/wf-inactive/publish"
+        assert mock_post.call_args_list[1][0][0] == "http://n8n.internal:5678/webhook/inactive-hook"
+
+
 def test_trigger_execution_no_webhook_node(monkeypatch):
     monkeypatch.delenv("JWT_SECRET", raising=False)
     monkeypatch.setenv("N8N_HOST", "http://n8n.internal:5678")
@@ -283,6 +436,7 @@ def test_trigger_execution_no_webhook_node(monkeypatch):
     workflow_without_webhook = {
         "id": "wf-no-hook",
         "name": "Schedule Flow",
+        "active": True,
         "nodes": [
             {
                 "id": "node-1",
@@ -307,6 +461,7 @@ def test_trigger_execution_missing_path(monkeypatch):
     workflow_empty_webhook = {
         "id": "wf-bad-hook",
         "name": "Bad Webhook",
+        "active": True,
         "nodes": [
             {
                 "id": "node-hook",
