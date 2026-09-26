@@ -93,23 +93,31 @@ All skill tools receive `POST` requests forwarded by ISLI Core:
 - **Method**: `POST`
 - **Path**: `/update_workflow`
 - **Body**: `{ "workflow_id": "...", "name": "...", "nodes": [...], "connections": {...}, "settings": {...} }`
+  
+*Note: Implements a Smart Merge. Partial payloads are supported (e.g. name only or node list update). The skill fetches the current workflow state, merges changes, and guarantees `connections: {}` and `settings: {}` are provided to satisfy n8n's strict PUT schema.*
 
 #### Activate Workflow
 - **Method**: `POST`
 - **Path**: `/activate_workflow`
 - **Body**: `{ "workflow_id": "..." }`
+  
+*Note: In n8n 2.x, this calls `/publish` (with fallback to `/activate`). n8n requires workflows to have at least one trigger node (Schedule, Webhook, Polling) to activate; descriptive error messages from n8n are surfaced.*
 
 #### Deactivate Workflow
 - **Method**: `POST`
 - **Path**: `/deactivate_workflow`
 - **Body**: `{ "workflow_id": "..." }`
+  
+*Note: In n8n 2.x, this calls `/unpublish` (with fallback to `/deactivate`).*
 
 ### Executions
 
 #### Trigger Execution
 - **Method**: `POST`
 - **Path**: `/trigger_execution`
-- **Body**: `{ "workflow_id": "..." }`
+- **Body**: `{ "workflow_id": "...", "payload": { ... } }`
+  
+*Note: In n8n's Public API, executions are triggered on-demand via Webhooks. The skill automatically inspects the target workflow for an active Webhook node, resolves its path, and triggers it via `/webhook/{path}` passing the optional JSON payload.*
 
 #### Get Execution Details
 - **Method**: `POST`

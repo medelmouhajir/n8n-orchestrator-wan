@@ -2,7 +2,7 @@ isli_version: "2.0"
 id: "n8n-orchestrator-wan"
 name: "n8n Orchestrator WAN"
 description: "Full n8n instance management. Create, update, and manage n8n workflows and executions with strict JSON validation."
-version: "1.2.0"
+version: "1.3.0"
 author: "ISLI AI"
 category: "automation"
 
@@ -51,7 +51,7 @@ tools:
       required: ["name", "nodes"]
 
   - name: "update_workflow"
-    description: "Update an existing workflow"
+    description: "Update an existing workflow with smart merge. Supports partial updates and guarantees required structure."
     endpoint: "update_workflow"
     method: "POST"
     parameters:
@@ -62,10 +62,10 @@ tools:
         nodes: { type: "array", description: "List of nodes in the workflow" }
         connections: { type: "object", description: "Connections between nodes" }
         settings: { type: "object", description: "Workflow settings" }
-      required: ["workflow_id", "name", "nodes"]
+      required: ["workflow_id"]
 
   - name: "activate_workflow"
-    description: "Activate a workflow"
+    description: "Activate / publish a workflow in n8n (requires a trigger/webhook/polling node)"
     endpoint: "activate_workflow"
     method: "POST"
     parameters:
@@ -75,7 +75,7 @@ tools:
       required: ["workflow_id"]
 
   - name: "deactivate_workflow"
-    description: "Deactivate a workflow"
+    description: "Deactivate / unpublish a workflow in n8n"
     endpoint: "deactivate_workflow"
     method: "POST"
     parameters:
@@ -85,13 +85,14 @@ tools:
       required: ["workflow_id"]
 
   - name: "trigger_execution"
-    description: "Trigger an execution for a workflow"
+    description: "Trigger an on-demand execution for a workflow by calling its Webhook node URL"
     endpoint: "trigger_execution"
     method: "POST"
     parameters:
       type: "object"
       properties:
         workflow_id: { type: "string", description: "ID of the workflow to trigger" }
+        payload: { type: "object", description: "Optional JSON payload to pass to the webhook" }
       required: ["workflow_id"]
 
   - name: "get_execution"

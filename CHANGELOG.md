@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.0]
+### Fixed
+- **`activate_workflow` & `deactivate_workflow` (n8n 2.x Publishing)**:
+  - Transitioned activation to `POST /api/v1/workflows/{id}/publish` (and deactivation to `POST /api/v1/workflows/{id}/unpublish`) with automatic fallback to `/activate` and `/deactivate` for n8n 1.x compatibility.
+  - Implemented `parse_n8n_error` to unpack and surface n8n's descriptive error messages (such as `"Workflow cannot be activated because it has no trigger node..."`) rather than returning opaque error strings or nested JSON dumps.
+- **`update_workflow` Smart Merge**:
+  - Resolved strict PUT 400 rejection (`request/body/connections must be object` and `request/body must have required property 'settings'`) by fetching the existing workflow via `GET /api/v1/workflows/{id}` and merging fields.
+  - Allowed partial updates (such as name-only or node changes) and guaranteed that `connections` and `settings` are always populated as JSON objects `{}`.
+- **`trigger_execution` Webhook-Based On-Demand Trigger**:
+  - Resolved 405/502 errors caused by invoking the non-existent `POST /api/v1/executions` public endpoint.
+  - Dynamically inspects workflow nodes for a Webhook trigger node (`n8n-nodes-base.webhook`), extracts its path, and triggers the workflow directly via `POST /webhook/{path}`.
+  - Added optional `payload` parameter to pass data to the webhook execution.
+
 ## [1.2.0]
 ### Fixed
 - **ISLI Core Proxy RPC Protocol**: Converted all REST endpoints (`GET /workflows`, `PUT /workflows/{id}`, etc.) to flat top-level `POST` actions (`/get_workflows`, `/create_workflow`, `/update_workflow`, `/activate_workflow`, `/deactivate_workflow`, `/trigger_execution`, `/get_execution`) conforming to ISLI Core router specifications.
